@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Hollow Lullaby</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&display=swap">
+<style>
+/* ROADMAP: 1 ray tracer core (analytic boxes/spheres, shadow rays) -> 2 wet-floor reflections + flicker lamps
+ 3 touch controls -> 4 Mr. Grin (moves only when unseen) -> 5 music box pieces + locked exit
+ 6 fear system (tunnel vision, shake, heartbeat) -> 7 oom-pah "dread" waltz + sfx -> 8 adaptive resolution */
+:root{color-scheme:dark;--bone:#d9cfae;--blood:#8c1c13;--tallow:#e0b25a}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;touch-action:none;overscroll-behavior:none;user-select:none;-webkit-user-select:none;font-family:'IM Fell English','Iowan Old Style',Palatino,Georgia,serif;color:var(--bone)}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+#hud{position:fixed;left:0;top:0;padding:calc(env(safe-area-inset-top,0px) + 14px) 18px 0;font-size:22px;font-style:italic;text-shadow:0 0 8px #000,0 0 2px #000;pointer-events:none}
+#hint,#bt{display:block;font-size:15px;opacity:.75;max-width:70vw;margin-top:4px}
+#stick{position:fixed;width:110px;height:110px;margin:-55px 0 0 -55px;border-radius:50%;border:1px solid #d9cfae44;display:none;pointer-events:none}
+#stick i{position:absolute;width:44px;height:44px;left:33px;top:33px;border-radius:50%;background:#d9cfae33}
+#ov{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;background:radial-gradient(#0a0605cc,#000f);z-index:5}
+#ov.on{display:flex}
+h1{font-weight:400;font-size:clamp(44px,13vw,84px);line-height:.95;margin:0 0 18px;color:var(--bone);text-shadow:0 0 24px #8c1c1388;letter-spacing:.01em}
+#ov p{max-width:30ch;font-size:19px;line-height:1.4;margin:0 0 28px;opacity:.85}
+button{font:italic 24px 'IM Fell English',Georgia,serif;color:#150a07;background:var(--tallow);border:0;border-radius:2px 14px 3px 12px;padding:14px 34px;box-shadow:0 0 30px #e0b25a44}
+#blk{position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;transition:opacity .45s;z-index:3}#blk.slit{background:linear-gradient(#000 41%,#0009 47%,#0009 53%,#000 59%)}#act{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 36px);transform:translateX(-50%);display:none;z-index:4;font-size:20px;padding:10px 22px}#flash{position:fixed;inset:0;background:#8c1c13;opacity:0;pointer-events:none;mix-blend-mode:multiply}
+</style></head><body>
+<canvas id="c"></canvas><div id="flash"></div><div id="blk"></div><button id="act"></button>
+<div id="hud">♪ <span id="cnt">0</span> of <span id="need">5</span><span id="hint"></span><span id="bt"></span></div>
+<div id="stick"><i></i></div>
+<div id="ov" class="on"><h1 id="t">Hollow<br>Lullaby</h1><p id="d">Five pieces of a music box are scattered through the hall. Mr. Grin only moves when you aren’t looking at him.</p><button id="go">Enter the hallway</button></div>
+<script>
+const $=id=>document.getElementById(id),cv=$('c');
+const gl=cv.getContext('webgl2',{antialias:false,powerPreference:'high-performance'});
+if(!gl){$('d').textContent='This game needs WebGL 2.';$('go').style.display='none'}
+// ---- levels (shared by shader and collision) ----
+const LV=[];
+(()=>{const pil=(xs,zs,hh)=>{const r=[];for(const z of zs)for(const x of xs)r.push([x-.35,0,z-.35,x+.35,hh,z+.35]);return r};
+LV.push({n:'I. The Hall',h:'He only moves when you can’t see him.',th:0,S:[-5,-5,5,34,3.2],st:-3.5,lamps:[4,16,28],
+ B:[...pil([-3,3],[6,12,18,24],3.2),[-4.2,0,8.6,-3.4,.8,9.4],[3,0,14.5,4,1,15.5],[-4,0,19.8,-3,.7,22.2],[2.6,0,27.5,4.2,.9,28.5]],
+ I:[[3.2,.9,3],[-3.5,.9,11.5],[3.6,.9,19],[-3.7,.9,26],[3.2,.9,31]],M:[[0,30,0]]});
+LV.push({n:'II. The Nursery',h:'Two of them now. The small one is quick.',th:1,S:[-7,-5,7,40,3.6],st:-3.5,lamps:[5,18,31],
+ B:[...pil([-4.5,4.5],[7,14,21,28,35],3.6),[-2.5,0,10,-1.1,1,12],[1.5,0,16,2.9,1,18],[-3,0,23,-1.6,1,25],[1,0,30,2.6,1,32]],
+ I:[[-5.5,.9,6],[5.5,.9,13],[-.2,.9,20],[5.8,.9,26],[-5.5,.9,31],[0,.9,37]],M:[[0,36,0],[-4,34,1]]});
+const w=[];for(let i=0;i<9;i++){const z=8+4*i;w.push(i%2?[-.6,0,z,3.5,3,z+.5]:[-3.5,0,z,.6,3,z+.5])}
+LV.push({n:'III. The Drowned Cellar',h:'Don’t look at her. Look at everything else.',th:2,S:[-3.5,-5,3.5,48,3],st:-3.5,lamps:[6,20,34],
+ B:w,I:[2,-2,2,-2,2,-2].map((x,k)=>[x,.9,10+4*k]),M:[[0,44,0],[2,40,1],[-2,46,2]]})})();
+(()=>{const pil=(xs,zs,hh)=>{const r=[];for(const z of zs)for(const x of xs)r.push([x-.35,0,z-.35,x+.35,hh,z+.35]);return r};
+const rows=(zs,a,b,c,hh)=>zs.flatMap(z=>[[-b,0,z,-a,hh,z+c],[a,0,z,b,hh,z+c]]);
+const crt=(n,sd,z0,z1,W)=>{let q=sd;const r=()=>(q=q*16807%2147483647)/2147483647,o=[];for(let i=0;i<n;i++){const x=-W+r()*2*W-.6,z=z0+r()*(z1-z0),w=.5+r()*.8,d=.5+r()*.8;o.push([x,0,z,x+w,.5+r()*1.1,z+d])}return o};
+LV.push({n:'IV. The Chapel',h:'The pews are full. Nobody is praying.',th:0,S:[-6,-5,6,50,4.5],st:-3.5,lamps:[6,20,34],lc:[.8,.45,1],np:6,
+ B:[...rows([8,12,16,20,24,28,32,36],1.3,4.6,.55,.9),...pil([-5,5],[10,26,42],4.5),[-1.5,0,44,1.5,1.1,46]],M:[[0,46,0],[-5,42,1],[5,40,2]]});
+LV.push({n:'V. The Boiler Room',h:'Something is breathing in the pipes.',th:2,S:[-6,-5,6,42,3.8],st:-3.5,lamps:[6,20,34],lc:[1,.3,.15],np:6,
+ B:[[-5,0,8,-2.5,2.6,12],[2.5,0,14,5,2.6,18],[-5,0,20,-2.5,2.6,24],[2.5,0,26,5,2.6,30],[-5,0,31,-2.5,2.6,35],[-1,0,10,1,.7,11],[-1,0,22,1,.7,23]],M:[[0,38,0],[3,36,1],[-3,38,1],[0,32,2]]});
+LV.push({n:'VI. The Attic',h:'Everything up here is wrapped in sheets.',th:1,S:[-6,-5,6,38,2.6],st:-3.5,lamps:[6,18,30],lc:[.9,1,.5],np:6,
+ B:crt(14,7,6,32,5.4),M:[[0,34,0],[-3,30,1],[3,36,2]]});
+LV.push({n:'VII. Ward Nine',h:'Visiting hours are over.',th:1,S:[-3,-5,3,60,3],st:-3.5,lamps:[8,26,44],lc:[.5,1,.8],np:6,
+ B:[...[8,18,28,38,48].map(z=>[-3,0,z,-1.7,.8,z+2.2]),...[13,23,33,43,53].map(z=>[1.7,0,z,3,.8,z+2.2])],M:[[0,56,0],[-1,52,1],[1,58,2],[0,48,1]]});
+LV.push({n:'VIII. The Picture House',h:'The screen is showing something.',th:0,S:[-8,-5,8,46,5],st:-3.5,lamps:[8,22,36],lc:[1,.35,.2],np:6,
+ B:[...rows([10,14,18,22,26,30,34],1.5,6.5,.8,.9),[-6,0,44,6,3,44.4]],M:[[0,42,0],[-6,38,1],[6,40,2],[0,36,1]]});
+LV.push({n:'IX. The Hollow Bedroom',h:'All of them. Don’t blink.',th:0,S:[-8,-5,8,60,3.6],st:-3.5,lamps:[8,26,44],lc:[1,.1,.1],np:7,
+ B:[...pil([-5,5],[8,16,24,32,40],3.6),[-2,0,50,2,1,55],[-7,0,52,-5,1.4,55],[5,0,52,7,1.4,55]],M:[[0,56,0],[2,54,0],[-2,58,1],[3,50,1],[0,52,2]]})})();
+const f=n=>n.toFixed(2),v3=a=>`vec3(${f(a[0])},${f(a[1])},${f(a[2])})`;
+const mkFS=L=>`#version 300 es
+precision highp float;out vec4 o;
+uniform vec2 R;uniform float T,fl,fear,unl,lampI;uniform int SPP;uniform vec3 P,F,Rt,U,lamp,lc;uniform vec4 IT[12],MO[5],WB[4],DR[8];
+#define TH ${L.th}
+const int NB=${L.B.length};
+const vec3 BL[NB]=vec3[NB](${L.B.map(b=>v3(b.slice(0,3))).join(',')});
+const vec3 BH[NB]=vec3[NB](${L.B.map(b=>v3(b.slice(3))).join(',')});
+const vec3 SL=vec3(${f(L.S[0])},0.,${f(L.S[1])}),SH=vec3(${f(L.S[2])},${f(L.S[4])},${f(L.S[3])});
+vec3 EM,MC;int MT;float SD,IW;
+float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5);}
+float rn(){SD=fract(sin(SD*127.1+1.7)*43758.5);return SD;}
+float nz(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h(i),h(i+vec2(1,0)),f.x),mix(h(i+vec2(0,1)),h(i+1.),f.x),f.y);}
+float bx(vec3 ro,vec3 rd,vec3 c,vec3 hs,out vec3 n){vec3 m=1./rd,q=m*(ro-c),k=abs(m)*hs,t1=-q-k,t2=-q+k;
+float a=max(max(t1.x,t1.y),t1.z),b=min(min(t2.x,t2.y),t2.z);n=-sign(rd)*step(t1.yzx,t1.xyz)*step(t1.zxy,t1.xyz);return(a<b&&a>1e-3)?a:1e9;}
+float sp(vec3 ro,vec3 rd,vec3 c,float r){vec3 o=ro-c;float b=dot(o,rd),d=b*b-dot(o,o)+r*r;if(d<0.)return 1e9;float s=-b-sqrt(d);return s>1e-3?s:1e9;}
+float tr(vec3 ro,vec3 rd,out vec3 n,out int m){
+ vec3 iv=1./rd,tt=mix((SL-ro)*iv,(SH-ro)*iv,step(0.,rd));float t=min(min(tt.x,tt.y),tt.z);
+ vec3 ax=step(tt,vec3(t));n=-sign(rd)*ax;m=ax.y>0.?(rd.y<0.?1:2):0;
+ vec3 nn;float s;
+ for(int i=0;i<NB;i++){s=bx(ro,rd,(BL[i]+BH[i])*.5,(BH[i]-BL[i])*.5,nn);if(s<t){t=s;n=nn;m=3;}}
+ for(int k=0;k<5;k++)if(MO[k].w>0.){
+  vec3 c=vec3(MO[k].x,0.,MO[k].y);int ty=int(MO[k].z);vec3 fw=normalize(vec3(P.x-c.x,0.,P.z-c.z)),sd=cross(vec3(0,1,0),fw),hc;float t0=t;
+  if(ty==0){
+   s=bx(ro,rd,c+vec3(0,1.,0),vec3(.17,1.,.1),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+vec3(.34,1.1,0),vec3(.035,.9,.035),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+vec3(-.34,1.1,0),vec3(.035,.9,.035),nn);if(s<t){t=s;n=nn;m=4;}
+   hc=c+vec3(0,2.35,0);s=sp(ro,rd,hc,.3);if(s<t){t=s;n=normalize(ro+rd*s-hc);m=5;}
+  }else if(ty==1){
+   hc=c+vec3(0,.85,0);s=sp(ro,rd,hc,.3);if(s<t){t=s;n=normalize(ro+rd*s-hc);m=4;}
+   for(int j=0;j<4;j++){vec3 lo=vec3(j<2?-.8:.8,0.,(j&1)==0?-.7:.7);
+    s=bx(ro,rd,c+vec3(lo.x,.45,lo.z),vec3(.03,.45,.03),nn);if(s<t){t=s;n=nn;m=4;}
+    s=bx(ro,rd,c+vec3(lo.x*.5,.9,lo.z*.5),vec3(abs(lo.x)*.5,.03,.03),nn);if(s<t){t=s;n=nn;m=4;}
+    s=bx(ro,rd,c+vec3(lo.x,.9,lo.z*.5),vec3(.03,.03,abs(lo.z)*.5),nn);if(s<t){t=s;n=nn;m=4;}}
+   hc=c+fw*.5+vec3(0,.8,0);s=sp(ro,rd,hc,.26);if(s<t){t=s;n=normalize(ro+rd*s-hc);m=5;}
+  }else{
+   s=bx(ro,rd,c+vec3(0,.5,0),vec3(.42,.5,.3),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+vec3(0,1.3,0),vec3(.3,.4,.22),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+vec3(0,1.9,0),vec3(.18,.2,.15),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+fw*.2+sd*.09+vec3(0,2.25,0),vec3(.04,.11,.04),nn);if(s<t){t=s;n=nn;m=4;}
+   s=bx(ro,rd,c+fw*.2-sd*.09+vec3(0,2.25,0),vec3(.04,.11,.04),nn);if(s<t){t=s;n=nn;m=4;}
+   hc=c+vec3(0,2.2,0);s=sp(ro,rd,hc,.2);if(s<t){t=s;n=normalize(ro+rd*s-hc);m=5;}
+  }
+  if(t<t0){MC=c;MT=ty;}}
+ for(int i=0;i<12;i++)if(IT[i].w>0.){vec3 c=IT[i].xyz;float w=IT[i].w;
+  if(w<2.5){c.y+=.12*sin(T*2.+float(i));s=sp(ro,rd,c,w<1.5?.13:.1);if(s<t){t=s;n=normalize(ro+rd*s-c);m=6;IW=w;}}
+  else if(w<3.5){s=bx(ro,rd,c+vec3(0,.1,0),vec3(.16,.1,.08),nn);if(s<t){t=s;n=nn;m=6;IW=3.;}}
+  else{s=bx(ro,rd,c+vec3(0,.15,0),vec3(.035,.15,.035),nn);if(s<t){t=s;n=nn;m=6;IW=4.;}
+   if(w>4.5){s=sp(ro,rd,c+vec3(0,.34,0),.05);if(s<t){t=s;n=normalize(ro+rd*s-c-vec3(0,.34,0));m=6;IW=5.;}}}}
+ return t;}
+vec3 shade(vec3 p,vec3 n,int m,vec3 rd){
+ vec3 alb=vec3(.3);EM=vec3(0);
+ if(m==0){float g=nz(p.xz*3.+p.y*2.)*.6+nz(p.yz*5.)*.4;
+  if(TH==0)alb=mix(vec3(.24,.13,.1),vec3(.15,.09,.08),step(.5,fract((p.x+p.z)*2.)))*(.4+g);
+  else if(TH==1)alb=mix(vec3(.2,.27,.27),vec3(.12,.17,.18),step(.5,fract((p.x+p.z)*3.)))*(.35+g);
+  else{vec2 q=vec2(p.x+p.z,p.y)*vec2(2.,4.);q.x+=floor(q.y)*.5;alb=mix(vec3(.2,.1,.08),vec3(.05),clamp(step(.9,fract(q.x))+step(.88,fract(q.y)),0.,1.))*(.4+g);alb=mix(alb,vec3(.05,.12,.05),smoothstep(1.2,.2,p.y));}
+  alb*=(.55+.45*smoothstep(0.,1.6,p.y))*(1.-.7*smoothstep(.55,.9,nz(p.xy*vec2(1.5,.7)+p.z*.6)));
+  if(p.y<.16)alb=vec3(.05,.035,.03)*(.6+g);else if(p.y>1.04&&p.y<1.1)alb*=.45;
+  if(TH<2&&abs(n.x)>.5){vec2 fq=vec2(mod(p.z+3.,7.)-3.5,p.y-1.8);if(abs(fq.x)<.4&&abs(fq.y)<.5){alb=(abs(fq.x)>.33||abs(fq.y)>.43)?vec3(.35,.22,.08):vec3(.05,.04,.035)*(.5+nz(fq*9.));vec2 ee=vec2(abs(fq.x)-.1,fq.y-.12);if(dot(ee,ee)<.0012)alb=vec3(.6,.6,.5);}}
+  float wc=mod((abs(n.x)>.5?p.z:p.x)+2.,9.);
+  for(int i=0;i<3;i++){float fi=float(i);vec2 d=vec2(wc,p.y)-vec2(2.+3.1*fi+.4*sin(T*.6+fi),.95+.45*fi+.25*sin(T*.8+fi*2.));float r=length(d);
+   if(r<.075||(r<.3&&abs(sin(atan(d.y,d.x)*4.+sin(T*9.+fi)*.3))<.1))alb=vec3(.006);}
+  if(n.z<-.5&&p.z>SH.z-.1&&abs(p.x)<1.3&&p.y<2.6){alb=vec3(.03,.01,.01);if(unl>0.){alb=vec3(.9,.85,.7);EM=vec3(1.,.95,.75)*2.2;}}}
+ else if(m==1){
+  if(TH==0){alb=mix(vec3(.06,.07,.06),vec3(.19,.19,.16),mod(floor(p.x)+floor(p.z),2.))*(.4+nz(p.xz*9.)*.9);alb=mix(alb,vec3(.25,.02,.02),smoothstep(.72,.8,nz(p.xz*.9+3.))*.8);}
+  else if(TH==1){alb=vec3(.24,.13,.07)*(.4+nz(vec2(p.x*40.,p.z*3.)))*(.3+.7*step(.04,fract(p.x*2.)));alb=mix(alb,vec3(.3,.02,.02),smoothstep(.75,.8,nz(p.xz*.7+8.))*.8);}
+  else alb=vec3(.015,.03,.025)*(.5+nz(p.xz*5.+T*.3));
+  float fd=sqrt(2.*SH.y/9.8);for(int i=0;i<8;i++)if(DR[i].w>0.){float a=T-DR[i].z-fd;float rr=smoothstep(.035,0.,abs(length(p.xz-DR[i].xy)-a*.45))*step(0.,a)*step(a,1.3)*(1.-a/1.3);alb+=rr*.5;EM+=rr*vec3(.18,.25,.3);}}
+ else if(m==2){alb=vec3(.1,.09,.08)*(.4+nz(p.xz*2.))*(1.-.7*step(.88,fract(p.z*.35)));if(TH==2&&abs(mod(p.x,2.)-1.)<.12)alb=vec3(.3,.15,.08)*(.5+nz(p.zz*.5));}
+ else if(m==3){if(TH==0)alb=vec3(.28,.16,.08)*(.5+nz(vec2(p.y*40.,p.x*4.+p.z*4.)));else if(TH==1)alb=vec3(.55,.5,.42)*(.5+.5*step(.5,fract((p.x+p.z)*9.)))*(.6+nz(p.xy*9.)*.4);else alb=vec3(.14,.14,.13)*(.4+nz(p.xy*6.+p.z));
+  if((abs(p.x-SL.x-.12)<.02||abs(p.x-SH.x+.12)<.02)&&p.y<1.)alb=vec3(.12)*step(.4,fract(p.y*16.));
+  if((abs(p.x-SL.x-.7)<.02||abs(p.x-SH.x+.7)<.02)&&p.y>.1){alb=vec3(.16,.22,.2)*(.7+.3*nz(p.yz*9.));if(p.y>1.5&&p.y<1.8&&fract(p.z*14.)<.5)alb=vec3(.01);}}
+ else if(m==4)alb=MT==0?vec3(.015):MT==1?vec3(.5,.45,.4)*(.4+.6*nz(p.xz*14.+p.y*9.)):vec3(.3,.28,.27)*(.3+.7*nz(p.xy*12.+p.z*5.));
+ else if(m==5){vec3 fw=normalize(vec3(P.x-MC.x,0.,P.z-MC.z)),hc=MT==0?MC+vec3(0,2.35,0):MT==1?MC+fw*.5+vec3(0,.8,0):MC+vec3(0,2.2,0);
+  vec3 d3=normalize(p-hc);float fr=dot(d3,fw),u=dot(d3,cross(vec3(0,1,0),fw)),v=d3.y;alb=(MT==2?vec3(.42,.42,.44):vec3(.6,.58,.5))*(.8+.2*nz(d3.xy*20.));
+  if(fr>.15){
+   if(MT==0){vec2 e=vec2(abs(u)-.36,v-.2);float q=dot(e,e);if(q<.04)alb=vec3(0);if(q<.006)EM=vec3(1.,.08,.04)*2.;
+    float vc=-.42+1.1*u*u;if(abs(u)<.64&&abs(v-vc)<.15)alb=fract(u*7.)<.22?vec3(.02):vec3(.9,.88,.75);}
+   else if(MT==1){alb=vec3(.55,.5,.42);vec2 e=vec2(abs(u)-.28,v-.3);if(dot(e,e)<.02){alb=vec3(.9,.95,.7);EM=vec3(.5,1.,.2);}
+    vec2 e2=vec2(abs(u)-.12,v-.08);if(dot(e2,e2)<.004){alb=vec3(.02);EM=vec3(.4,.9,.1);}
+    vec2 mq=vec2(u,(v+.4)*.8);float md=dot(mq,mq);if(md<.075)alb=vec3(.01);else if(md<.11&&fract(atan(mq.y,mq.x)*5.)<.45)alb=vec3(.92,.9,.8);}
+   else{if(abs(abs(u)-.3)<.05&&v<.2&&v>-.7)alb=vec3(.01);vec2 e=vec2(abs(u)-.3,v-.18);if(dot(e,e)<.005)EM=vec3(.3,.8,1.)*2.;}}}
+ else{if(IW<1.5){EM=vec3(1.,.7,.25)*2.5;return EM;}if(IW<2.5){EM=vec3(.3,.9,1.)*2.5;return EM;}
+  if(IW<3.5)return vec3(.2,.12,.07)*(.6+nz(p.xy*30.))+vec3(.8,.08,.04)*step(.5,fract(p.x*14.))*step(.12,p.y)*(.5+.5*sin(T*3.));
+  if(IW<4.5)return vec3(.22,.2,.16);EM=vec3(1.,.6,.2)*3.;return EM;}
+ vec3 c=alb*(TH==2?vec3(.05,.09,.08):vec3(.07,.09,.11));
+ vec3 Lv=P+(vec3(rn(),rn(),rn())-.5)*.14-p;float d=length(Lv),ndl,att,ts;Lv/=d;vec3 nn;int mm;
+ ndl=max(dot(n,Lv),0.);att=smoothstep(.86,.97,dot(-Lv,F))*fl/(1.+.035*d*d);
+ if(att*ndl>.003){ts=tr(p+n*.004,Lv,nn,mm);if(ts<d)att=0.;}
+ c+=alb*ndl*att*vec3(1.,.92,.75)*8.;
+ Lv=lamp+(vec3(rn(),rn(),rn())-.5)*.6-p;d=length(Lv);Lv/=d;ndl=max(dot(n,Lv),0.);att=lampI/(1.+.12*d*d);
+ if(att*ndl>.004){ts=tr(p+n*.004,Lv,nn,mm);if(ts<d)att=0.;}
+ c+=alb*ndl*att*lc*4.;
+ return c+EM;}
+void main(){
+ vec2 u0=(gl_FragCoord.xy-.5*R)/min(R.x,R.y);vec3 acc=vec3(0);
+ for(int s=0;s<SPP;s++){SD=h(gl_FragCoord.xy*.37+float(s)*7.13+fract(T)*5.);
+  vec2 uv=u0+(vec2(rn(),rn())-.5)/min(R.x,R.y)+fear*.012*vec2(sin(T*31.),cos(T*27.));
+  vec3 rd=normalize(F*.95+Rt*uv.x+U*uv.y),n;int m;float t=tr(P,rd,n,m);vec3 p=P+rd*t;vec3 col=shade(p,n,m,rd);
+  if(m==1){if(TH==2)n=normalize(n+(vec3(nz(p.xz*5.+T*.4),0.,nz(p.zx*5.-T*.3))-.5)*.12);
+   vec3 rr=normalize(reflect(rd,n)+(vec3(rn(),rn(),rn())-.5)*(TH==2?.03:.1));vec3 n2;int m2;float t2=tr(p+n*.004,rr,n2,m2);
+   vec3 c2=shade(p+n*.004+rr*t2,n2,m2,rr)*exp(-t2*.1);col=mix(col,c2,(TH==2?.45:.2)+.5*pow(1.-max(dot(-rd,n),0.),3.));}
+  float fg=exp(-t*.055);vec3 cc=col*fg+vec3(.008,.014,.018)*(1.-fg);
+  float cn=smoothstep(.88,.985,dot(rd,F))*fl,vol=0.,mt=0.;
+  for(int k=0;k<6;k++){float tk=t*(float(k)+rn())/6.;vec3 q=P+rd*tk;float dn=nz(q.xz*2.2+q.y*1.3+T*.12)*nz(q.xy*1.7-T*.08+3.);vol+=(.3+dn)*exp(-tk*.12);mt+=step(.9935,h(floor(q.xz*22.)+floor(q.y*22.)+floor(T*.7)))*exp(-tk*.2);}
+  cc+=vec3(1.,.93,.8)*cn*(vol*t*.0075+mt*.7);
+  float fdr=sqrt(2.*SH.y/9.8);for(int i=0;i<8;i++)if(DR[i].w>0.){float a=T-DR[i].z;if(a>0.&&a<fdr){vec3 dc=vec3(DR[i].x,SH.y-4.9*a*a,DR[i].y);if(sp(P,rd,dc,.03)<t)cc+=vec3(.6,.85,1.)*(.3+cn*2.);}}
+  for(int i=0;i<4;i++)if(WB[i].w>0.){float tw=(WB[i].z-P.z)/rd.z;if(tw>0.&&tw<t){vec3 q=P+rd*tw;vec2 d=q.xy-WB[i].xy;float r=length(d),a=atan(d.y,d.x);
+   float wm=((abs(sin(a*4.5))*r<.022||abs(fract(r*5.)-.5)>.46)&&r<.95)?1.:0.;cc=mix(cc,vec3(.75,.75,.7)*(.12+cn*3./(1.+.04*tw*tw)),wm*.85);}}
+  acc+=cc;}
+ vec3 col=acc/float(SPP);col*=clamp(1.-dot(u0,u0)*(.9+fear*1.6),0.,1.);
+ col=mix(col,vec3(col.r*1.7,col.g*.35,col.b*.35),fear*.55);
+ col+=(h(gl_FragCoord.xy+T)-.5)*.06;col*=1.8;col=pow(col/(1.+col),vec3(.8));o=vec4(col,1.);}`;
+const VS=`#version 300 es
+void main(){gl_Position=vec4(float((gl_VertexID<<1)&2)*2.-1.,float(gl_VertexID&2)*2.-1.,0,1);}`;
+let webs=[],drips=[],bat=100,busy=0,hideUntil=0,lure=null,lureUntil=0,shk=0,stepPh=0,nextAmb=0,cA=null;
+let pr,U={},cur=0,nextLv=0,L,B,mons=[],items=[],S='menu',scale=.55,spp=3,P={x:0,y:1.55,z:-3.5},yaw=0,pit=0,got=0,T0=0,fear=0,ema=16;
+function build(){if(!gl)return;const mk=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(x));return x};
+ if(pr)gl.deleteProgram(pr);pr=gl.createProgram();gl.attachShader(pr,mk(gl.VERTEX_SHADER,VS));gl.attachShader(pr,mk(gl.FRAGMENT_SHADER,mkFS(L)));gl.linkProgram(pr);gl.useProgram(pr);
+ for(const k of'R T fl fear unl lampI SPP P F Rt U lamp lc IT MO WB DR'.split(' '))U[k]=gl.getUniformLocation(pr,k)}
+function load(lv){cur=lv;L=LV[lv];
+ if(!L.done){L.done=1;let q=lv*977+13;const sr=()=>(q=q*16807%2147483647)/2147483647,Sx=L.S;
+  const fr=(x,z,r)=>!L.B.some(b=>x>b[0]-r&&x<b[3]+r&&z>b[2]-r&&z<b[5]+r);
+  const pick=(a,b,m)=>{for(let k=0;k<80;k++){const x=Sx[0]+m+sr()*(Sx[2]-Sx[0]-2*m),z=a+sr()*(b-a);if(fr(x,z,.8))return[x,z]}return[0,a]};
+  const side=(d,a,b)=>{for(let k=0;k<80;k++){const z=a+sr()*(b-a),x=d<0?Sx[0]:Sx[2];if(fr(x-d*.8,z,.9)&&fr(x-d*1.6,z,.9))return z}return null};
+  const z0=Sx[1]+6,sp=Sx[3]-6-z0;L.vents=[];L.lock=[];L.X=[];L.web=[];
+  [[-1,.25],[1,.75]].forEach(([d,fq])=>{const z=side(d,z0+sp*(fq-.12),z0+sp*(fq+.12)),x=d<0?Sx[0]:Sx[2];if(z!=null){L.B.push(d<0?[x,.2,z-.5,x+.12,.9,z+.5]:[x-.12,.2,z-.5,x,.9,z+.5]);L.vents.push({p:[x-d*.9,z]})}});
+  [[1,.45],[-1,.6]].forEach(([d,fq])=>{const z=side(d,z0+sp*(fq-.1),z0+sp*(fq+.1)),x=d<0?Sx[0]:Sx[2];if(z!=null){L.B.push(d<0?[x,0,z-.4,x+.7,2,z+.4]:[x-.7,0,z-.4,x,2,z+.4]);L.lock.push({p:[x-d*1.1,z]})}});
+  if(!L.I){L.I=[];for(let i=0;i<L.np;i++){const[x,z]=pick(z0+sp*i/L.np,z0+sp*(i+1)/L.np,1);L.I.push([x,.9,z])}}
+  for(const[a,b,w,y]of[[.2,.5,2,.9],[.6,.95,2,.9],[.3,.7,3,0],[.1,.4,4,0]]){const[x,z]=pick(z0+sp*a,z0+sp*b,1);L.X.push([x,y,z,w])}
+  for(let i=0;i<3;i++){const[x,z]=pick(z0+sp*(i+.2)/3,z0+sp*(i+.8)/3,1.2);L.web.push([x,z])}}
+ B=L.B;build();items=[...L.I.map(p=>({p,w:1,on:1})),...L.X.map(a=>({p:[a[0],a[1],a[2]],w:a[3],on:1}))];
+ mons=L.M.map(a=>({x:a[0],z:a[1],t:a[2]}));webs=L.web.map(a=>({x:a[0],z:a[1],on:1,t:0}));drips=Array.from({length:8},()=>({x:0,z:0,t0:-99,life:0,s:0}));
+ P.x=0;P.z=L.st;got=0;fear=0;yaw=0;pit=0;bat=100;busy=0;hideUntil=0;lure=null;lureUntil=0;shk=0;
+ $('cnt').textContent=0;$('need').textContent=L.I.length;$('hint').textContent=L.h}
+function resize(){const d=Math.min(devicePixelRatio||1,3)*scale;cv.width=Math.floor(innerWidth*d);cv.height=Math.floor(innerHeight*d);gl&&gl.viewport(0,0,cv.width,cv.height)}
+addEventListener('resize',resize);resize();
+// ---- input ----
+const st={id:null,x0:0,y0:0,x:0,y:0},lk={id:null,x:0,y:0},sk=$('stick');
+addEventListener('pointerdown',e=>{if(S!=='play'||e.target.closest('button'))return;
+ if(e.clientX<innerWidth/2&&st.id==null){st.id=e.pointerId;st.x0=e.clientX;st.y0=e.clientY;st.x=st.y=0;sk.style.cssText=`display:block;left:${e.clientX}px;top:${e.clientY}px`}
+ else if(lk.id==null){lk.id=e.pointerId;lk.x=e.clientX;lk.y=e.clientY}});
+addEventListener('pointermove',e=>{if(e.pointerId===st.id){let dx=(e.clientX-st.x0)/50,dy=(e.clientY-st.y0)/50,l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l}st.x=dx;st.y=-dy;sk.firstChild.style.transform=`translate(${dx*30}px,${dy*30}px)`}
+ else if(e.pointerId===lk.id){yaw+=(e.clientX-lk.x)*.0055;pit=Math.max(-.7,Math.min(.7,pit-(e.clientY-lk.y)*.004));lk.x=e.clientX;lk.y=e.clientY}});
+const up=e=>{if(e.pointerId===st.id){st.id=null;st.x=st.y=0;sk.style.display='none'}if(e.pointerId===lk.id)lk.id=null};
+addEventListener('pointerup',up);addEventListener('pointercancel',up);
+// ---- audio: a dread waltz that is, unfortunately, a polka ----
+let ac,mg,nt=0,stp=0;const _=99;
+const M=[0,_,3,_,7,_,3,_, 0,_,3,_,8,7,_,_, 5,_,8,_,12,_,8,_, 7,6,7,_,11,_,_,_];
+function initA(){ac=new(window.AudioContext||webkitAudioContext)();mg=ac.createGain();mg.gain.value=.5;const d=ac.createDelay(),fb=ac.createGain();d.delayTime.value=.23;fb.gain.value=.33;d.connect(fb);fb.connect(d);mg.connect(d);d.connect(ac.destination);mg.connect(ac.destination);nt=ac.currentTime+.1}
+function tone(f0,f1,dur,type,vol,when,lp){if(!ac)return;const t=when||ac.currentTime,o=ac.createOscillator(),g=ac.createGain();o.type=type;o.frequency.setValueAtTime(f0,t);if(f1!==f0)o.frequency.exponentialRampToValueAtTime(f1,t+dur);
+ g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(vol,t+.01);g.gain.exponentialRampToValueAtTime(.0001,t+dur);let n=o;
+ if(lp){const q=ac.createBiquadFilter();q.type=lp[0];q.frequency.value=lp[1];q.Q.value=lp[2]||1;o.connect(q);n=q}n.connect(g);g.connect(mg);o.start(t);o.stop(t+dur+.05)}
+function noise(dur,vol,when){const t=when||ac.currentTime,b=ac.createBuffer(1,ac.sampleRate*dur,ac.sampleRate),d=b.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*(1-i/d.length);
+ const s=ac.createBufferSource(),g=ac.createGain();g.gain.value=vol;s.buffer=b;s.connect(g);g.connect(mg);s.start(t)}
+function music(){if(!ac)return;const tmp=150+fear*70;while(nt<ac.currentTime+.12){const s=stp%32,bar=s>>3,b=s&7,off=[0,0,5,7][bar],iv=bar===3?[0,4,7]:[0,3,7],r=110*2**(off/12);
+ if(b===0||b===4)tone(r*1.03,r,.22,'sawtooth',.3,nt,['lowpass',500]);
+ if(b===2||b===6)iv.forEach(i=>{const f=220*2**((off+i)/12);tone(f,f,.12,'square',.05,nt,['lowpass',1500])});
+ if(M[s]<90){const f=440*2**(M[s]/12);tone(f*1.05,f,.22,'sawtooth',.11,nt,['bandpass',1300,2.5])}
+ if(s===31)tone(500,2400,.45,'sine',.1,nt);nt+=30/tmp;stp++}}
+function wah(){const w=ac.currentTime+.9;[233,220,208].forEach((f,i)=>tone(f,f*.97,.5,'sawtooth',.25,w+i*.6,['lowpass',700]));tone(196,92,1.6,'sawtooth',.28,w+1.8,['lowpass',600])}
+// ---- game ----
+const clamp=(a,l,h)=>Math.max(l,Math.min(h,a)),rnd=(a,b)=>a+Math.random()*(b-a),actB=$('act'),blk=$('blk');
+function start(lv){if(!ac)initA();else ac.resume();load(lv);S='play';$('ov').classList.remove('on');T0=performance.now();st.id=lk.id=null;blk.style.opacity=0;blk.className=''}
+$('go').onclick=()=>start(nextLv);
+function end(win){S=win?'won':'dead';const last=cur>=LV.length-1;nextLv=win?(last?0:cur+1):cur;actB.style.display='none';blk.style.opacity=0;
+ $('t').innerHTML=win?(last?'You got<br>out.':'Cleared.'):'It caught<br>you.';
+ $('d').textContent=win?(last?'The music box plays by itself. Nothing in the dark is smiling now. Nothing you can see.':'The next room is colder. Something heavier waits in it.'):'It was only ever a few steps behind.';
+ $('go').textContent=win?(last?'Walk it again':'Go deeper'):'Try again'}
+actB.onclick=()=>{const a=cA,T=performance.now()/1000;if(!a||S!=='play'||T<busy)return;
+ if(a.k==='vent'&&L.vents.length>1){busy=T+1.1;blk.style.opacity=1;tone(200,90,.25,'square',.2);
+  setTimeout(()=>{const v=L.vents[(a.i+1)%L.vents.length];P.x=v.p[0];P.z=v.p[1];yaw=v.p[0]<0?Math.PI/2:-Math.PI/2;pit=0;tone(150,60,.3,'square',.2);blk.style.opacity=0},550)}
+ else if(a.k==='hide'){hideUntil=T+5;busy=T+5;blk.className='slit';blk.style.opacity=1;tone(180,120,.2,'square',.15)}
+ else if(a.k==='radio'){a.it.used=1;lure={x:a.it.p[0],z:a.it.p[2]};lureUntil=T+9}
+ else if(a.k==='candle'){a.it.w=5;tone(900,1400,.15,'sine',.1)}};
+if(gl)load(0);
+let last=performance.now(),fc=0,beat=0;const IT=new Float32Array(48),MO=new Float32Array(20),WB=new Float32Array(16),DR=new Float32Array(32);
+function frame(now){requestAnimationFrame(frame);if(!gl)return;const dt=Math.min((now-last)/1000,.05),ft=now-last;last=now;const T=now/1000;ema+=(ft-ema)*.1;
+ if(++fc%60===0&&S==='play'){if(ema>24){if(spp>1)spp--;else if(scale>.3){scale-=.06;resize()}}else if(ema<17.5){if(scale<.6){scale+=.04;resize()}else if(spp<4)spp++}}
+ let walk=0;const cds=items.filter(i=>i.w===5);
+ if(S==='play'){const cp=Math.cos(pit),fx=Math.sin(yaw),fz=Math.cos(yaw),idle=T<busy,mx=idle?0:st.x,my=idle?0:st.y;let slow=1;
+  if(hideUntil&&T>hideUntil){hideUntil=0;blk.style.opacity=0;blk.className=''}
+  webs.forEach(w=>{if(w.on&&Math.abs(P.z-w.z)<.55&&Math.abs(P.x-w.x)<.95){slow=.22;shk=Math.max(shk,.12);w.t+=dt;if(w.t>2.4){w.on=0;tone(300,80,.3,'triangle',.2);shk=.6}}});
+  walk=Math.min(1,Math.hypot(mx,my))*slow;const sp=2.3*slow;
+  P.x=clamp(P.x+(fx*my+fz*mx)*sp*dt,L.S[0]+.3,L.S[2]-.3);P.z=clamp(P.z+(fz*my-fx*mx)*sp*dt,L.S[1]+.3,L.S[3]-.3);
+  for(const b of B){const r=.3,x0=b[0]-r,x1=b[3]+r,z0=b[2]-r,z1=b[5]+r;if(P.x>x0&&P.x<x1&&P.z>z0&&P.z<z1){const dx=Math.min(P.x-x0,x1-P.x),dz=Math.min(P.z-z0,z1-P.z);
+   if(dx<dz)P.x=P.x-x0<x1-P.x?x0:x1;else P.z=P.z-z0<z1-P.z?z0:z1}}
+  const pre=stepPh;stepPh+=dt*walk*7;if(walk>.1&&ac&&Math.floor(stepPh/Math.PI)!==Math.floor(pre/Math.PI))noise(.05,L.th===2?.2:.1);
+  bat=Math.max(0,bat-dt*.8);
+  for(const i of items)if(i.on&&(i.w===1||i.w===2)&&Math.hypot(P.x-i.p[0],P.z-i.p[2])<1){i.on=0;
+   if(i.w===1){got++;$('cnt').textContent=got;tone(250,900,.3,'sine',.3);tone(900,300,.3,'sine',.2,ac.currentTime+.3);if(got===L.I.length)$('hint').textContent='The door at the far end is open. Run.'}
+   else{bat=Math.min(100,bat+45);tone(500,1000,.2,'triangle',.2)}}
+  cA=null;const dd=p=>Math.hypot(P.x-p[0],P.z-p[1]);
+  L.vents.forEach((v,i)=>{if(dd(v.p)<1.4&&L.vents.length>1)cA={k:'vent',i,txt:'Crawl into the vent'}});L.lock.forEach(l=>{if(dd(l.p)<1.4)cA={k:'hide',txt:'Hide in the locker'}});
+  items.forEach(it=>{if(Math.hypot(P.x-it.p[0],P.z-it.p[2])<1.3){if(it.w===3&&!it.used)cA={k:'radio',it,txt:'Switch on the radio'};if(it.w===4)cA={k:'candle',it,txt:'Light the candle'}}});
+  if(T<busy)cA=null;actB.style.display=cA?'block':'none';if(cA)actB.textContent=cA.txt;
+  if(T<lureUntil&&ac&&Math.random()<.25){noise(.07,.1);tone(rnd(300,900),rnd(300,900),.08,'square',.03)}
+  let dmin=99,nk=0;
+  mons.forEach((m,k)=>{const ex=m.x-P.x,ez=m.z-P.z,ey=(m.t===1?.85:m.t===2?2.2:1.9)-P.y,d=Math.hypot(ex,ez)||.01;
+   m.seen=(fx*cp*ex+Math.sin(pit)*ey+fz*cp*ez)/Math.hypot(d,ey)>.7;
+   const lured=T<lureUntil&&lure,hold=T<busy||cds.some(c=>Math.hypot(c.p[0]-m.x,c.p[2]-m.z)<4),gx=(lured?lure.x:P.x)-m.x,gz=(lured?lure.z:P.z)-m.z,gd=Math.hypot(gx,gz)||.01;
+   if(!hold&&gd>.4&&(T-T0/1000)>3&&(lured||(m.t===2?m.seen:!m.seen))){const s2=(m.t===1?1.9:m.t===2?1.1:1.25)+.3*got,lat=m.t===1?Math.sin(T*6+k)*1.1:0;
+    m.x=clamp(m.x+(gx/gd*s2+gz/gd*lat)*dt,L.S[0]+.3,L.S[2]-.3);m.z=clamp(m.z+(gz/gd*s2-gx/gd*lat)*dt,L.S[1]+.3,L.S[3]-.3);
+    if(ac){if(m.t===1&&Math.random()<.35)noise(.04,.12);if(m.t===0&&Math.random()<.04)tone(1700,2300,.07,'square',.05);if(m.t===2&&Math.random()<.025)tone(440,330,.7,'sine',.07,0,['bandpass',900,4])}}
+   if(d<dmin){dmin=d;nk=k}});
+  fear=Math.pow(clamp(1-(dmin-1)/9,0,1),1.5);const mm=mons[nk];
+  if(T>=busy&&dmin<(mm.t===1?.95:.85)){yaw=Math.atan2(mm.x-P.x,mm.z-P.z);const d2=mm.t===1?1.5:.95;pit=mm.t===1?-.7:.55;mm.x=P.x+Math.sin(yaw)*d2;mm.z=P.z+Math.cos(yaw)*d2;shk=1.5;
+   if(ac){noise(.6,.7);tone(1200,200,.5,'sawtooth',.3);wah()}$('flash').style.opacity=1;end(false);setTimeout(()=>{$('flash').style.opacity=0},180);setTimeout(()=>$('ov').classList.add('on'),3800)}
+  else if(got===L.I.length&&P.z>L.S[3]-1.4&&Math.abs(P.x)<1.4){end(true);if(ac)tone(300,600,.8,'sine',.2);$('ov').classList.add('on')}
+  if(ac&&fear>.1&&T>beat){tone(70,40,.16,'sine',.5);beat=T+1.15-.7*fear}
+  if(fc%8===0)$('bt').textContent='Light '+Math.round(bat)+'%'}
+ else{if(S==='dead')fear=1;else{yaw=Math.sin(T*.2)*.3;fear=0}actB.style.display='none'}
+ if(ac&&T>nextAmb){nextAmb=T+rnd(5,13);tone(rnd(50,90),rnd(30,50),.6,'sine',.25);if(Math.random()<.5)tone(rnd(200,400),rnd(120,200),.7,'sawtooth',.03,0,['bandpass',500,6])}
+ const fdt=Math.sqrt(2*L.S[4]/9.8);
+ drips.forEach((d,k)=>{if(T>d.t0+3.5+d.life){d.x=clamp(P.x+rnd(-3.5,3.5),L.S[0]+.4,L.S[2]-.4);d.z=clamp(P.z+rnd(-1,8),L.S[1]+.4,L.S[3]-.4);d.t0=T+rnd(0,2);d.life=rnd(0,3);d.s=0}
+  if(!d.s&&T>d.t0+fdt){d.s=1;if(ac)tone(rnd(1800,2800),1200,.12,'sine',.07/(1+Math.hypot(d.x-P.x,d.z-P.z)*.4))}DR.set([d.x,d.z,d.t0,1],k*4)});
+ music();
+ shk=Math.max(0,shk-dt*1.5);const sh=shk+fear*.3,sw=Math.sin(stepPh*.5);
+ const yw=yaw+(Math.random()-.5)*sh*.035+sw*.006*walk,pt=pit+Math.sin(stepPh)*.008*walk+(Math.random()-.5)*sh*.03,rl=sw*.014*walk+(Math.random()-.5)*sh*.04;
+ const cy=Math.cos(yw),sy=Math.sin(yw),cp=Math.cos(pt),sp2=Math.sin(pt),cr=Math.cos(rl),sr=Math.sin(rl);
+ const lz=L.lamps.reduce((a,b)=>Math.abs(b-P.z)<Math.abs(a-P.z)?b:a);let lp=[0,L.S[4]-.2,lz],lcv=L.lc||[[1,.5,.2],[.6,.8,1],[.5,1,.6]][L.th];
+ const lit=cds.reduce((a,c)=>!a||Math.hypot(c.p[0]-P.x,c.p[2]-P.z)<Math.hypot(a.p[0]-P.x,a.p[2]-P.z)?c:a,null);
+ if(lit&&Math.hypot(lit.p[0]-P.x,lit.p[2]-P.z)<Math.hypot(P.x,lz-P.z)+3){lp=[lit.p[0],.7,lit.p[2]];lcv=[1,.6,.25]}
+ const fl=(Math.random()<fear*.18?.15:1)*(S==='dead'?(Math.random()<.5?0:1):1)*(.25+.75*Math.min(1,bat/60))*(bat<20&&Math.random()<.1?.3:1);
+ gl.uniform2f(U.R,cv.width,cv.height);gl.uniform1f(U.T,T);gl.uniform1f(U.fl,fl);gl.uniform1f(U.fear,S==='dead'?1:fear);gl.uniform1f(U.unl,got===L.I.length?1:0);gl.uniform1i(U.SPP,spp);
+ gl.uniform1f(U.lampI,Math.sin(T*37)+Math.sin(T*17.3)>1.5?.15:1);gl.uniform3f(U.P,P.x+sw*.02*walk,P.y+Math.abs(Math.sin(stepPh))*.045*walk,P.z);gl.uniform3f(U.F,sy*cp,sp2,cy*cp);
+ const R0=[cy,0,-sy],U0=[-sy*sp2,cp,-cy*sp2];gl.uniform3f(U.Rt,R0[0]*cr+U0[0]*sr,R0[1]*cr+U0[1]*sr,R0[2]*cr+U0[2]*sr);gl.uniform3f(U.U,U0[0]*cr-R0[0]*sr,U0[1]*cr-R0[1]*sr,U0[2]*cr-R0[2]*sr);
+ gl.uniform3f(U.lamp,lp[0],lp[1],lp[2]);gl.uniform3f(U.lc,lcv[0],lcv[1],lcv[2]);
+ IT.fill(0);items.forEach((i,k)=>IT.set([...i.p,i.on?i.w:0],k*4));MO.fill(0);mons.forEach((m,k)=>MO.set([m.x,m.z,m.t,1],k*4));WB.fill(0);webs.forEach((w,k)=>WB.set([w.x,1.2,w.z,w.on?1:0],k*4));
+ gl.uniform4fv(U.IT,IT);gl.uniform4fv(U.MO,MO);gl.uniform4fv(U.WB,WB);gl.uniform4fv(U.DR,DR);gl.drawArrays(gl.TRIANGLES,0,3)}
+requestAnimationFrame(frame);
+</script></body></html>
